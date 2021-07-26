@@ -1,0 +1,6 @@
+# ARCH   ROOTFS_ARCH    ROOTFS_PACK_TAG ROOTFS_PACK_TREE                            ROOTFS_TEST_TAG ROOTFS_TEST_TREE
+# aarch64  aarch64                 v3.2 0566841e29f0f9880541c26a6595fd5ce0beb5ff               v3.2 d38f34db72317ffa798b18b0c8e193795bb254db
+# armv7l   armv7l                  v3.2 fb359370b052a47ce5c84cc6b4a7a03ed7053b25               v3.2 11c66f1c3a094e031fae6a9de0fa7986459466b6
+32       i686                      v3.2 209c4db679a515befd7fb50ecc6bfbecf7ec3d32               v3.2 b63e7f1002f093dc51390cd8f4a6368ea929560f
+# ppc64le  powerpc64le             v3.2 c03a0158b19d48ac84b426834fce0d3584cdd0c7               v3.2 0b23a48bb5ed4b3226ebceea18375a2b09caf34d
+64       x86_64                    v3.2 474bf61a926b2d7fcf202284d59d4b11a04601d7               v3.2 b1b1fce0b76b2dbe41222093f2f9f3f8e226018d
