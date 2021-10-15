@@ -47,11 +47,7 @@ function has_bad_phis(ci::CodeInfo)
 end
 
 function handle_bad_phis!(ci::CodeInfo)
-    # Insert goto %2
-    prepend!(ci.code, [Core.GotoNode(2)])
-    prepend!(ci.codelocs, 1)
-
-    #Increment entry-block-pointing PhiNode edges
+    #Increment PhiNode edges that indicate a pred of from 0
     for i = 1:length(ci.code)
         stmt = ci.code[i]
         if isa(stmt, PhiNode)
@@ -80,10 +76,10 @@ function replace_code_newstyle!(ci::CodeInfo, ir::IRCode, nargs::Int)
         push!(ci.ssaflags, IR_FLAG_NULL)
     end
 
-    # Check for the rare case of PhiNodes in the entry block
-    # If found, add a GoToNode with a destination of %2 in the entry block 
+    # Check for the case of PhiNodes in the entry block (#37154)
+    # If found, add a GoToNode with a destination of %2 as the first statement in the entry block
     # This causes the entry block to split, where the new entry block is just the new GoToNode
-    # We then increment PhiNode edges that were previously pointing to the entry block
+    # We then increment PhiNode edges that were previously pointing to the entry block so they point the first non-entry block
 
     if has_bad_phis(ci)
         handle_bad_phis!(ci)
@@ -93,19 +89,11 @@ function replace_code_newstyle!(ci::CodeInfo, ir::IRCode, nargs::Int)
     # (and undo normalization for now)
     for i = 1:length(ci.code)
         stmt = ci.code[i]
-        # if i == 1 && isa(stmt, PhiNode)
-        #     throw(ErrorException("Function created problematic PhiNode"))
-        # end 
         if isa(stmt, GotoNode)
             stmt = GotoNode(first(ir.cfg.blocks[stmt.label].stmts))
         elseif isa(stmt, GotoIfNot)
             stmt = GotoIfNot(stmt.cond, first(ir.cfg.blocks[stmt.dest].stmts))
         elseif isa(stmt, PhiNode)
-            if 0 in stmt.edges
-                # @eval Main _ci = $(ci)
-                
-                #Main.Base.show(ci)
-            end
             stmt = PhiNode(Int32[last(ir.cfg.blocks[edge].stmts) for edge in stmt.edges], stmt.values)
         elseif isa(stmt, Expr) && stmt.head === :enter
             stmt.args[1] = first(ir.cfg.blocks[stmt.args[1]::Int].stmts)
@@ -113,6 +101,12 @@ function replace_code_newstyle!(ci::CodeInfo, ir::IRCode, nargs::Int)
         ci.code[i] = stmt
     end
     
+    if has_bad_phis(ci)
+        prepend!(ci.code, [Core.GotoNode(2)])
+        prepend!(ci.codelocs, 1)
+        prepend!(ci.ssavaluetypes, [Any])
+        prepend!(ci.ssaflags, IR_FLAG_NULL)
+    end
 end
 
 # used by some tests

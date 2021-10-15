@@ -3816,6 +3816,10 @@ static jl_cgval_t emit_call(jl_codectx_t &ctx, jl_expr_t *ex, jl_value_t *rt)
 
 static void undef_var_error_ifnot(jl_codectx_t &ctx, Value *ok, jl_sym_t *name)
 {
+    // undef cond is undefined behavior - instead set to false to jump to error
+    if (isa<UndefValue>(ok)) {
+        ok = ConstantInt::get(T_int1, 0);
+    }
     BasicBlock *err = BasicBlock::Create(jl_LLVMContext, "err", ctx.f);
     BasicBlock *ifok = BasicBlock::Create(jl_LLVMContext, "ok");
     ctx.builder.CreateCondBr(ok, ifok, err);
@@ -6404,7 +6408,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
         has_sret = (returninfo.cc == jl_returninfo_t::SRet || returninfo.cc == jl_returninfo_t::Union);
         jl_init_function(f);
 
-        // common pattern: see if all return statements are an argument in that
+        // common pattern: see if all return statements are an argument - in that
         // case the apply-generic call can re-use the original box for the return
         int retarg = [stmts, nreq]() {
             int retarg = -1;
