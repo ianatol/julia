@@ -48,11 +48,6 @@ function is_derived_type(@nospecialize(t), @nospecialize(c), mindepth::Int)
         # see if it is derived from the body
         # also handle the var here, since this construct bounds the mindepth to the smallest possible value
         return is_derived_type(t, c.var.ub, mindepth) || is_derived_type(t, c.body, mindepth)
-<<<<<<< HEAD
-    elseif isa(c, Core.TypeofVararg)
-        return is_derived_type(t, unwrapva(c), mindepth)
-=======
->>>>>>> 1daaf473d1... inference: relax type_more_complex for Type
     elseif isa(c, DataType)
         if mindepth > 0
             mindepth -= 1
@@ -133,14 +128,10 @@ function _limit_type_size(@nospecialize(t), @nospecialize(c), sources::SimpleVec
         end
         return Vararg{VaT}
     elseif isa(t, DataType)
-<<<<<<< HEAD
         if isa(c, Core.TypeofVararg)
             # Tuple{Vararg{T}} --> Tuple{T} is OK
             return _limit_type_size(t, unwrapva(c), sources, depth, 0)
         elseif isType(t) # allow taking typeof as Type{...}, but ensure it doesn't start nesting
-=======
-        if isType(t) # see equivalent case in type_more_complex
->>>>>>> 1daaf473d1... inference: relax type_more_complex for Type
             tt = unwrap_unionall(t.parameters[1])
             if isa(tt, Union) || isa(tt, TypeVar) || isType(tt)
                 is_derived_type_from_any(tt, sources, depth + 1) && return t
