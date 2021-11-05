@@ -186,8 +186,6 @@ function _limit_type_size(@nospecialize(t), @nospecialize(c), sources::SimpleVec
     return Any
 end
 
-<<<<<<< HEAD
-=======
 # helper function of `_limit_type_size`, which has the right to take and return `TypeVar` / `Vararg`
 function __limit_type_size(@nospecialize(t), @nospecialize(c), sources::SimpleVector, depth::Int, allowed_tuplelen::Int)
     cN = 0
@@ -220,7 +218,6 @@ function __limit_type_size(@nospecialize(t), @nospecialize(c), sources::SimpleVe
     end
 end
 
->>>>>>> 1daaf473d1... inference: relax type_more_complex for Type
 function type_more_complex(@nospecialize(t), @nospecialize(c), sources::SimpleVector, depth::Int, tupledepth::Int, allowed_tuplelen::Int)
     # detect cases where the comparison is trivial
     if t === c
@@ -266,24 +263,12 @@ function type_more_complex(@nospecialize(t), @nospecialize(c), sources::SimpleVe
         return t !== 1 && !(0 <= t < c) # alternatively, could use !(abs(t) <= abs(c) || abs(t) < n) for some n
     end
     # base case for data types
-<<<<<<< HEAD
-    if isa(t, Core.TypeofVararg)
-        if isa(c, Core.TypeofVararg)
-            return type_more_complex(unwrapva(t), unwrapva(c), sources, depth + 1, tupledepth, 0)
-        end
-    elseif isa(t, DataType)
-        tP = t.parameters
-        if isa(c, Core.TypeofVararg)
-            return type_more_complex(t, unwrapva(c), sources, depth, tupledepth, 0)
-        elseif isType(t) # allow taking typeof any source type anywhere as Type{...}, as long as it isn't nesting Type{Type{...}}
-=======
     if isa(t, DataType)
         tP = t.parameters
         if isType(t)
             # Treat Type{T} and T as equivalent to allow taking typeof any
             # source type (DataType) anywhere as Type{...}, as long as it isn't
             # nesting as Type{Type{...}}
->>>>>>> 1daaf473d1... inference: relax type_more_complex for Type
             tt = unwrap_unionall(t.parameters[1])
             if isa(tt, Union) || isa(tt, TypeVar) || isType(tt)
                 return !is_derived_type_from_any(tt, sources, depth + 1)
