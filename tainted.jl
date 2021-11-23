@@ -178,8 +178,56 @@ end
 
 const WrappedSource = Union{CodeInfo,OptimizationState,Nothing}
 
+# custom lattice element / wrapper for representing taint analysis
+# `val` taints every element in `tainted`
+# that is, we were able to statically determine that elements in `tainted` were derived from `val` (and potentially others?)
+struct Taint
+    val
+    tainted::Vector{Any}
+end
+
+widenconst((; val)::Taint) = isa(val, Type) ? Type{val} : typeof(val)
+
+# partial ordering for Taint elements
+a::Taint ⊑ b::Taint = (a.val === b.val) 
+
+@nospecialize(a) ⊑ b::Taint = begin
+    isa(a, LimitedAccuracy) && (a = a.typ)
+
+    # MaybeUndef should not be encountered during abstract interpretation
+    # if isa(a, MaybeUndef)
+
+    if isa(a, AnyConditional)
+        a = Bool
+    end
+
+    # Don't think TypeVar is valid here either
+    # if isa(a, TypeVar)
+    if isa(a, PartialStruct)
+        return a.typ === widenconst(b)
+    elseif isa(a, Const)
+        return isa(a.val, Taint) # XXX copied from CC.⊑ but this smells --- can Taint elements get wrapped in Const?
+    elseif isa(a, PartialOpaque)
+        return widenconst(a) ⊑ b
+    elseif isa(a, Type)
+        return a === widencost(b)
+    else
+        return a === b
+    end
+end
+
+a::Taint ⊑ @nospecialize(b) = false 
+# begin 
+#     isa(b, LimitedAccuracy) && (b = b.typ)
+
+# tmerge(a::Taint, @nospecialize(b))
+# tmerge(@nospecialize(a), b::Taint)
+# tmeet(a::Taint, @nospecialize(b))
+# tmeet(@nospecialize(a), b::Taint)
+
+# XXX currently not using this approach and instead opting to use custom lattice element
 mutable struct TaintReport
-    report # result of our taint analysis --- some mapping from input variables to tainted output variables
+    report # result of our taint analysis
 end
 mutable struct CachedTaintReport
     report
@@ -205,14 +253,12 @@ mutable struct TaintAnalyzerState
     param_key::UInt
     caller_cache::Reports
     cacher::Union{Nothing, Pair{Symbol, InferenceResult}}
-    #TaintAnalyzerState() = new(CC.NativeInterpreter(), 0, Vector{TaintReport}(), nothing)
 end
 
 struct TaintAnalyzer <: AbstractInterpreter
     cache::Vector{TaintResult}
     native::NativeInterpreter
     state::TaintAnalyzerState
-    #TaintAnalyzer() = new(Vector{TaintResult}(), CC.NativeInterpreter(), TaintAnalyzerState())
 end
 get_native(interp::TaintAnalyzer) = interp.native
 get_cache_key(interp::TaintAnalyzer) = hash(interp.cache)
@@ -230,7 +276,6 @@ function TaintAnalyzer(world = get_world_counter();
     isnothing(inf_params) && (inf_params = InferenceParams()) #default inference and opt params
     isnothing(opt_params) && (opt_params = OptimizationParams())
 
-    #native = CC.NativeInterpreter(world; inf_params, opt_params)
     state = TaintAnalyzerState(world; inf_params, opt_params)
     native = state.native
     cache = Vector{TaintResult}();
@@ -346,7 +391,7 @@ function analyze_frame!(analyzer::TaintAnalyzer, frame::InferenceState)
     return analyzer, frame.result
 end
 
-# Prototype overrides of abstract interpretation calls
+# Overrides of abstract interpretation functions
 CC.bail_out_toplevel_call(analyzer::TaintAnalyzer, @nospecialize(sig), sv) = false
 
 function CC.abstract_eval_special_value(analyzer::TaintAnalyzer, @nospecialize(e), vtypes::VarTable, sv::InferenceState)
@@ -382,8 +427,11 @@ function collect_callee_reports!(analyzer::TaintAnalyzer, sv::InferenceState)
 end
 
 function CC.abstract_call_method(analyzer::TaintAnalyzer, method::Method, @nospecialize(sig), sparams::SimpleVector, hardlimit::Bool, sv::InferenceState)
+    # here we should create and inject Taint elements
+    # println("method sig : ", method.sig)
+    # println("sig : ", sig)
     ret = @invoke CC.abstract_call_method(analyzer::AbstractInterpreter, method::Method, sig, sparams::SimpleVector, hardlimit::Bool, sv::InferenceState)
-    collect_callee_reports!(analyzer, sv)
+    #collect_callee_reports!(analyzer, sv)
     return ret
 end
 
@@ -405,17 +453,18 @@ end
 
 function CC.abstract_call(analyzer::TaintAnalyzer, arginfo::ArgInfo,
                           sv::InferenceState, max_methods::Int = InferenceParams(analyzer).MAX_METHODS)
+    # println("inside abstract_call, arginfo.fargs = ", arginfo.fargs)
     ret = @invoke CC.abstract_call(analyzer::AbstractInterpreter, arginfo::ArgInfo,
                                    sv::InferenceState, max_methods::Int)
     return ret
 end
 
 
-function CC.return_type_tfunc(analyzer::TaintAnalyzer, argtypes, sv::InferenceState)
+function CC.return_type_tfunc(analyzer::TaintAnalyzer, argtypes::Vector{Any}, sv::InferenceState)
     result = sv.result
     result0 = result.src::TaintResult
     set_result!(result)
-    ret = @invoke return_type_tfunc(analyzer::AbstractInterpreter, argtypes, sv::InferenceState)
+    ret = @invoke return_type_tfunc(analyzer::AbstractInterpreter, argtypes::Vector{Any}, sv::InferenceState)
     set_result!(sv.result, result0)
     return ret
 end
@@ -451,7 +500,6 @@ struct GlobalTaintCache{Analyzer<:TaintAnalyzer}
 end
 
 function taint_cache(analyzer::TaintAnalyzer)
-    @eval Main (ana = $analyzer; cache = $TAINT_CACHE)
     TAINT_CACHE[get_cache_key(analyzer)]
 end
 taint_cache(wvc::WorldView{<:GlobalTaintCache}) = taint_cache(wvc.cache.analyzer)
@@ -466,7 +514,7 @@ end
 function CC.get(wvc::WorldView{<:GlobalTaintCache}, mi::MethodInstance, default)
     codeinf = get(taint_cache(wvc), mi, default) # will ignore native code cache for a `MethodInstance` that is not analyzed by JET yet
 
-    # analyzer = wvc.cache.analyzer
+    analyzer = wvc.cache.analyzer
 
     # # XXX this relies on a very dirty analyzer state manipulation, the reason for this is
     # # that this method (and `code_cache(::TaintAnalyzer)`) can be called from multiple
@@ -475,24 +523,20 @@ function CC.get(wvc::WorldView{<:GlobalTaintCache}, mi::MethodInstance, default)
     # # the caller of this specific method call here and thus can't tell whether we should
     # # enable report cache reconstruction without the information
     # # XXX move this logic into `typeinf_edge` ?
-    # cacher = get_cacher(analyzer)
-    # if isa(cacher, Pair{Symbol,InferenceResult})
-    #     setter, caller = cacher
-    #     if setter === :typeinf_edge
-    #         if isa(codeinf, CodeInstance)
-    #             # cache hit, now we need to append cached reports associated with this `MethodInstance`
-    #             for cached in get_cached_reports(codeinf.inferred::JETCachedResult)
-    #                 restored = add_cached_report!(caller, cached)
-    #                 @static if JET_DEV_MODE
-    #                     actual, expected = first(restored.vst).linfo, mi
-    #                     @assert actual === expected "invalid global cache restoration, expected $expected but got $actual"
-    #                 end
-    #                 add_caller_cache!(analyzer, restored) # should be updated in `abstract_call` (after exiting `typeinf_edge`)
-    #             end
-    #         end
-    #         set_cacher!(analyzer, nothing)
-    #     end
-    # end
+    cacher = get_cacher(analyzer)
+    if isa(cacher, Pair{Symbol,InferenceResult})
+        setter, caller = cacher
+        if setter === :typeinf_edge
+            if isa(codeinf, CodeInstance)
+                # cache hit, now we need to append cached reports associated with this `MethodInstance`
+                for cached in get_cached_reports(codeinf.inferred::CachedTaintResult)
+                    restored = add_cached_report!(caller, cached)
+                    add_caller_cache!(analyzer, restored) # should be updated in `abstract_call` (after exiting `typeinf_edge`)
+                end
+            end
+            set_cacher!(analyzer, nothing)
+        end
+    end
 
     return codeinf
 end
@@ -519,38 +563,6 @@ function CC.setindex!(wvc::WorldView{<:GlobalTaintCache}, ci::CodeInstance, mi::
     return nothing
 end
 
-function add_jet_callback!(linfo)
-    if !isdefined(linfo, :callbacks)
-        linfo.callbacks = Any[invalidate_jet_cache!]
-    else
-        callbacks = linfo.callbacks::Vector{Any}
-        if !any(function (@nospecialize(cb),)
-                    cb === invalidate_jet_cache!
-                end,
-                callbacks)
-            push!(callbacks, invalidate_jet_cache!)
-        end
-    end
-    return nothing
-end
-
-function invalidate_jet_cache!(replaced, max_world, depth = 0)
-    for cache in values(JET_CACHE)
-        delete!(cache, replaced)
-    end
-
-    if isdefined(replaced, :backedges)
-        for mi in replaced.backedges
-            mi = mi::MethodInstance
-            if !any(cache->haskey(cache, mi), values(JET_CACHE))
-                continue # otherwise fall into infinite loop
-            end
-            invalidate_jet_cache!(mi, max_world, depth+1)
-        end
-    end
-    return nothing
-end
-
 # local
 # -----
 
@@ -559,7 +571,6 @@ struct LocalTaintCache{Analyzer<:TaintAnalyzer}
     cache::Vector{InferenceResult}
 end
 
-# do we want native cache here or cache from TaintAnalyzer?
 CC.get_inference_cache(analyzer::TaintAnalyzer) = LocalTaintCache(analyzer, get_inference_cache(get_native(analyzer)))
 
 function CC.cache_lookup(linfo::MethodInstance, given_argtypes, cache::LocalTaintCache)
@@ -581,14 +592,10 @@ function CC.cache_lookup(linfo::MethodInstance, given_argtypes, cache::LocalTain
     # cache hit, try to restore local report caches
 
     # corresponds to the throw-away logic in `_typeinf(analyzer::TaintAnalyzer, frame::InferenceState)`
-    filter!(!is_from_same_frame(caller.linfo, linfo), get_reports(caller))
+    #filter!(!is_from_same_frame(caller.linfo, linfo), get_reports(caller))
 
     for cached in get_cached_reports(inf_result)
         restored = add_cached_report!(caller, cached)
-        # @static if JET_DEV_MODE
-        #     actual, expected = first(restored.vst).linfo, linfo
-        #     @assert actual === expected "invalid local cache restoration, expected $expected but got $actual"
-        # end
         add_caller_cache!(analyzer, restored) # should be updated in `abstract_call_method_with_const_args`
     end
 
@@ -602,6 +609,10 @@ CC.push!(cache::LocalTaintCache, inf_result::InferenceResult) = CC.push!(cache.c
 function CC.typeinf(analyzer::TaintAnalyzer, frame::InferenceState)
     (; linfo, parent, result) = frame
     isentry = isnothing(parent)
+    if isentry
+        println("entry linfo : " , linfo.specTypes)
+        #println("entry frame")
+    end
     ret = @invoke typeinf(analyzer::AbstractInterpreter, frame::InferenceState)
     return ret
 end
@@ -624,8 +635,6 @@ function CC._typeinf(analyzer::TaintAnalyzer, frame::InferenceState)
         # finalize and record the linfo result
         caller.inferred = true
     end
-    println("test")
-    @eval Main (frames = $frames)
     # collect results for the new expanded frame
     results = Tuple{InferenceState, Vector{Any}, Bool}[
             ( frames[i],

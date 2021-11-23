@@ -16,7 +16,7 @@ function Base.merge(a::LinearCoeffMap, b::LinearCoeffMap)
     LinearCoeffMap(mergewith(+, a.coeffs, b.coeffs))
 end
 function Base.:-(lcm::LinearCoeffMap)
-    LinearCoeffMap(Dict(a=>-b for (a,b) in  lcm.coeffs))
+    LinearCoeffMap(Dict(a=>-b for (a,b) in lcm.coeffs))
 end
 
 struct Incidence <: Real
