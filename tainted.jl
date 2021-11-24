@@ -176,11 +176,15 @@ macro invoke(ex)
     return esc(:($(GlobalRef(Core, :invoke))($(f), Tuple{$(argtypes...)}, $(args...); $(kwargs...))))
 end
 
+const MAX_TYPEUNION_COMPLEXITY = 3
+const MAX_TYPEUNION_LENGTH = 3
+const MAX_INLINE_CONST_SIZE = 256
+
 const WrappedSource = Union{CodeInfo,OptimizationState,Nothing}
 
-# custom lattice element / wrapper for representing taint analysis
+# custom lattice element / wrapper for taint analysis
 # `val` taints every element in `tainted`
-# that is, we were able to statically determine that elements in `tainted` were derived from `val` (and potentially others?)
+# that is, we were able to statically determine that elements in `tainted` were derived from at least `val`
 struct Taint
     val
     tainted::Vector{Any}
@@ -189,24 +193,19 @@ end
 widenconst((; val)::Taint) = isa(val, Type) ? Type{val} : typeof(val)
 
 # partial ordering for Taint elements
-a::Taint ⊑ b::Taint = (a.val === b.val) 
+a::Taint ⊑ b::Taint = (a.val === b.val)
 
 @nospecialize(a) ⊑ b::Taint = begin
     isa(a, LimitedAccuracy) && (a = a.typ)
-
-    # MaybeUndef should not be encountered during abstract interpretation
-    # if isa(a, MaybeUndef)
 
     if isa(a, AnyConditional)
         a = Bool
     end
 
-    # Don't think TypeVar is valid here either
-    # if isa(a, TypeVar)
     if isa(a, PartialStruct)
         return a.typ === widenconst(b)
     elseif isa(a, Const)
-        return isa(a.val, Taint) # XXX copied from CC.⊑ but this smells --- can Taint elements get wrapped in Const?
+        return isa(a.val, Taint) # XXX copied from CC.⊑ but this smells
     elseif isa(a, PartialOpaque)
         return widenconst(a) ⊑ b
     elseif isa(a, Type)
@@ -216,14 +215,23 @@ a::Taint ⊑ b::Taint = (a.val === b.val)
     end
 end
 
-a::Taint ⊑ @nospecialize(b) = false 
-# begin 
-#     isa(b, LimitedAccuracy) && (b = b.typ)
+a::Taint ⊑ @nospecialize(b) = begin
+    isa(b, LimitedAccuracy)  && return false
+    isa(b, AnyConditional) && return false
+    isa(b, PartialStruct) && return false
+    if isa(b, Const)
+        b = b.val
+    end
 
-# tmerge(a::Taint, @nospecialize(b))
-# tmerge(@nospecialize(a), b::Taint)
-# tmeet(a::Taint, @nospecialize(b))
-# tmeet(@nospecialize(a), b::Taint)
+    # XXX this is brokenly conservative, just want to get things working
+    return false
+end
+
+# until we have this more ironed out just widen to Any
+tmerge(a::Taint, @nospecialize(b)) = tmerge(@nospecialize(a), b::Taint) = Any
+
+# and similarly for tmeet
+tmeet(a::Taint, @nospecialize(b)) = tmeet(@nospecialize(a), b::Taint) = Bottom
 
 # XXX currently not using this approach and instead opting to use custom lattice element
 mutable struct TaintReport

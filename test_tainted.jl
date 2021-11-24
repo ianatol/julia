@@ -72,9 +72,9 @@ Incidence(r::Real) = Incidence()
 ddt(x) = isa(x, Dual) ? (x.partials[1]; x.partials[1]) : 0.0
 function F((b1, b2), x)
     if b1
-        Any[x[1] - exp(ddt(x[2])), ddt(x[1]) + ddt(x[2])*sin(ddt(x[2]))] 
+        Any[x[1] - exp(ddt(x[2])), ddt(x[1]) + ddt(x[2])*sin(ddt(x[2]))]
     else
-        Any[x[1] - log(x[2]) + ddt(x[1]) + ddt(x[2])*cos(ddt(x[2]))] 
+        Any[x[1] - log(x[2]) + ddt(x[1]) + ddt(x[2])*cos(ddt(x[2]))]
     end
 end
 
@@ -82,5 +82,6 @@ u = [Incidence(Dict(i=>1), BitSet(i), BitSet()) for i = 1:2]
 du = [Incidence(Dict(Diff(i)=>1), BitSet(), BitSet(i)) for i = 1:2]
 
 x = [Dual(u[1], du[1]); Dual(u[2], du[2])]
-@analyze_call(F((true, false), x))
+TaintAnalysis.@analyze_taints(F((true, false), x))
+# @analyze_call(F((true, false), x))
 # map(ForwardDiff.value, F((true, false), x))

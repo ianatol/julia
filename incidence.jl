@@ -72,9 +72,9 @@ Incidence(r::Real) = Incidence()
 ddt(x) = isa(x, Dual) ? (x.partials[1]; x.partials[1]) : 0.0
 function F((b1, b2), x)
     if b1
-        Any[x[1] - exp(ddt(x[2])), ddt(x[1]) + ddt(x[2])*sin(ddt(x[2]))] 
+        Any[x[1] - exp(ddt(x[2])), ddt(x[1]) + ddt(x[2])*sin(ddt(x[2]))]
     else
-        Any[x[1] - log(x[2]) + ddt(x[1]) + ddt(x[2])*cos(ddt(x[2]))] 
+        Any[x[1] - log(x[2]) + ddt(x[1]) + ddt(x[2])*cos(ddt(x[2]))]
     end
 end
 
