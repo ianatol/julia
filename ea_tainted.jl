@@ -178,7 +178,7 @@ mutable struct TaintLattice
     TaintedArg::BitSet # this element is directly tainted by arguments at these locations in the methods args
 end
 
-TaintLattice(latt::TaintLattice, new_pcs, new_args) = 
+TaintLattice(latt::TaintLattice, new_pcs, new_args) =
     TaintLattice(latt.Analyzed,
                 union(latt.TaintedPC, new_pcs),
                 union(latt.TaintedArg, new_args))
@@ -205,8 +205,8 @@ function maybeAddTaint!(ele::TaintLattice, val)
     if isa(val, SSAValue)
         val = val.id
         push!(ele.TaintedPC, val)
-    else 
-        isa(val, Argument) || return 
+    else
+        isa(val, Argument) || return
         val = val.n
         push!(ele.TaintedArg, val)
     end
@@ -334,13 +334,13 @@ function merge_state_stmt!(state::TaintState, stmt, pc::Int)
 end
 
 
-# return the ssavalues or arguments that directly taint the ssavalue at pc 
+# return the ssavalues or arguments that directly taint the ssavalue at pc
 ssas_that_taint(state::TaintState, pc) = state.ssavalues[pc].TaintedPC
 args_that_taint(state::TaintState, pc) = state.ssavalues[pc].TaintedArg
 
 # adds to state.ssavalues[pc].TaintedPC and .TaintedArg the ssavalues and arguments
 # that either directly or indirectly taint that pc
-# TODO: Infinite loop
+# TODO: fix Infinite loop
 function propagate_taint!(state::TaintState, pc)
     ele = state.ssavalues[pc]
     new_ssas = BitSet()
@@ -382,6 +382,7 @@ function find_related(ssavals::Vector{TaintLattice}, val)
     return related
 end
 
+# gets ssavalues that this val directly or indirectly taints
 function retrace_taint(res::TaintState, val) # call with ssavalue or argument
     linears = BitSet()
     nonlinears = Dict{Int, BitSet}()
@@ -403,20 +404,13 @@ function retrace_taint(res::TaintState, val) # call with ssavalue or argument
             #union!(nonlinears[i], tainted_by(res, ssaval))
         end
     end
-    #     if nonlinears == next_nonlinears
-    #         fully_traced = true
-    #     else
-    #         println("Loop count: ", loops)
-    #         next_nonlinears = copy(nonlinears)
-    #     end
-    # end
-
     return (linears, nonlinears)
 end
 
 const state_cache = Dict{Int, TaintState}()
 has_cached_state(pc::Int) = haskey(state_cache, pc)
 clear_local_cache!() = empty!(state_cache)
+
 function cache_cleanup(cache, returns) #only keep the states that correspond to the end of a control flow branch (i.e., the states at pcs that are returns)
     #println("cache size before cleanup: ", length(cache))
     new_cache = Dict{Int, TaintState}()
@@ -428,7 +422,6 @@ end
 
 function propagate_cache!(cache)
     for pc in keys(cache)
-        #println(pc)
         propagate_taint!(cache[pc], pc)
     end
 end
@@ -447,9 +440,10 @@ function find_taints(ir::IRCode, nargs::Int)
     state = TaintState(nstmts, nargs)
     state_cache[1] = state
     #changes = Changes() # stashes changes that happen at current statement
-    array_elements = Vector{Integer}() # TODO: BitSets
+    array_elements = Vector{Integer}() # TODO: BitSets?
     returns = Vector{Integer}()
 
+    # TODO: convergence?
     # while true
     #     local anyupdate = false
 
@@ -467,7 +461,7 @@ function find_taints(ir::IRCode, nargs::Int)
 
             # propagate states according to control flow
             # TODO: mark the condition ssas to determine control flow if given a constant argument in some caller
-            if isa(stmt, GotoNode) 
+            if isa(stmt, GotoNode)
                 dest_pc = stmt.label
                 state_cache[dest_pc] = state
             elseif isa(stmt, GotoIfNot)
@@ -552,8 +546,8 @@ function find_taints(ir::IRCode, nargs::Int)
     # end
     #@eval Main (state_cache = $state_cache; returns = $returns)
     clean_cache = cache_cleanup(state_cache, returns)
-    println("cache after cleanup: ", state_cache)
-    propagate_cache!(clean_cache)
+    #println("cache after cleanup: ", state_cache)
+    #propagate_cache!(clean_cache)
     return (state, clean_cache)
 end
 
@@ -769,7 +763,6 @@ function CC.optimize(interp::TaintAnalyzer, opt::OptimizationState, params::Opti
     return CC.finish(interp, opt, params, ir, result)
 end
 
-
 # HACK enable copy and paste from Core.Compiler
 function run_passes_with_taint_analysis end
 #register_init_hook!() do
@@ -784,18 +777,19 @@ function run_passes_with_taint_analysis end
         nargs = let def = sv.linfo.def
             isa(def, Method) ? Int(def.nargs) : 0
         end
-        println("calling find_taints on ir: ")
-        println(ir.stmts.inst)
-        println("\n method name: ", sv.linfo.def.name)
+        #println("method name: ", sv.linfo.def.name)
+        #println("calling find_taints on its ir: ")
+        #println(ir.stmts.inst)
         @timeit "collect escape information" state = $find_taints(ir, nargs)
-        cache_local_state = state |> first
+        # note at this point, cache only has states at return pcs
+        local_state = state |> first # TODO: union together results from all control flows using cache
         cacheir = copy(ir)
         # cache this result
-        $setindex!($GLOBAL_TAINT_CACHE, (cache_local_state, cacheir), sv.linfo)
+        $setindex!($GLOBAL_TAINT_CACHE, (local_state, cacheir), sv.linfo)
         @eval Main (glob_cache = $GLOBAL_TAINT_CACHE)
         # return back the result
         interp.ir = cacheir
-        interp.state = cache_local_state
+        interp.state = local_state
         interp.linfo = sv.linfo
         @timeit "SROA"      ir = sroa_pass!(ir)
         @timeit "ADCE"      ir = adce_pass!(ir)
