@@ -174,9 +174,14 @@ An abstract state will be initialized with the bottom(-like) elements:
 """
 mutable struct TaintLattice
     Analyzed::Bool
-    TaintedPC::BitSet # this element is tainted by variables at these locations in the methods stmts
-    TaintedArg::BitSet # this element is tainted by variables at these locations in the methods args
+    TaintedPC::BitSet # this element is directly tainted by statements at these locations in the methods stmts
+    TaintedArg::BitSet # this element is directly tainted by arguments at these locations in the methods args
 end
+
+TaintLattice(latt::TaintLattice, new_pcs, new_args) = 
+    TaintLattice(latt.Analyzed,
+                union(latt.TaintedPC, new_pcs),
+                union(latt.TaintedArg, new_args))
 
 # precomputed default values in order to eliminate computations at each callsite
 #const CLEAN = BitSet()
@@ -259,9 +264,6 @@ end
 #         )
 # end
 
-# TODO setup a more effient struct for cache
-# which can discard escape information on SSS values and arguments that don't join dispatch signature
-
 """
     state::EscapeState
 
@@ -331,11 +333,92 @@ function merge_state_stmt!(state::TaintState, stmt, pc::Int)
     return state
 end
 
+
+# return the ssavalues or arguments that directly taint the ssavalue at pc 
+ssas_that_taint(state::TaintState, pc) = state.ssavalues[pc].TaintedPC
+args_that_taint(state::TaintState, pc) = state.ssavalues[pc].TaintedArg
+
+# adds to state.ssavalues[pc].TaintedPC and .TaintedArg the ssavalues and arguments
+# that either directly or indirectly taint that pc
+# TODO: Infinite loop
+function propagate_taint!(state::TaintState, pc)
+    ele = state.ssavalues[pc]
+    new_ssas = BitSet()
+    new_args = BitSet()
+    done = false
+    while !done
+        for ssa in ele.TaintedPC
+            push!(new_ssas, ssas_that_taint(state, ssa))
+            push!(new_args, args_that_taint(state, ssa))
+        end
+        new_ele = TaintLattice(ele, new_ssas, new_args)
+        if new_ele == ele
+            done = true
+        else
+            ele = new_ele
+        end
+    end
+    return ele
+end
+
+# gets ssavalues that this ssavalue or argument directly taints
+function find_related(ssavals::Vector{TaintLattice}, val)
+    related = BitSet()
+    if isa(val, SSAValue)
+        val = val.id
+        for (idx, ele) in enumerate(ssavals)
+            if arg in ele.TaintedPC
+                push!(related, idx)
+            end
+        end
+    elseif isa(val, Argument)
+        val = val.n
+        for (idx, ele) in enumerate(ssavals)
+            if arg in ele.TaintedArg
+                push!(related, idx)
+            end
+        end
+    end
+    return related
+end
+
+function retrace_taint(res::TaintState, val) # call with ssavalue or argument
+    linears = BitSet()
+    nonlinears = Dict{Int, BitSet}()
+    # linearly related
+    linears = find_related(res.ssavalues, val)
+
+    # nonlinearly related (1 level)
+    for pc in linears
+        nonlinears[pc] = tainted_by(res, pc)
+    end
+    # nonlinearly related (n levels)
+    #next_nonlinears = copy(nonlinears)
+    for i in keys(nonlinears)
+        for ssaval in nonlinears[i]
+            ssaval_taints = tainted_by(res, ssaval)
+            for tainted in ssaval_taints
+                push!(nonlinears[i], tainted)
+            end
+            #union!(nonlinears[i], tainted_by(res, ssaval))
+        end
+    end
+    #     if nonlinears == next_nonlinears
+    #         fully_traced = true
+    #     else
+    #         println("Loop count: ", loops)
+    #         next_nonlinears = copy(nonlinears)
+    #     end
+    # end
+
+    return (linears, nonlinears)
+end
+
 const state_cache = Dict{Int, TaintState}()
 has_cached_state(pc::Int) = haskey(state_cache, pc)
 clear_local_cache!() = empty!(state_cache)
-function cache_cleanup(cache, returns) #only keep the states that correspond to the end of a control flow branch (i.e., a return)
-    println("cache size before cleanup: ", length(cache))
+function cache_cleanup(cache, returns) #only keep the states that correspond to the end of a control flow branch (i.e., the states at pcs that are returns)
+    #println("cache size before cleanup: ", length(cache))
     new_cache = Dict{Int, TaintState}()
     for return_idx in returns
         new_cache[return_idx] = cache[return_idx]
@@ -343,6 +426,12 @@ function cache_cleanup(cache, returns) #only keep the states that correspond to 
     return new_cache
 end
 
+function propagate_cache!(cache)
+    for pc in keys(cache)
+        #println(pc)
+        propagate_taint!(cache[pc], pc)
+    end
+end
 
 # we preserve `IRCode` as well just for debugging purpose
 const GLOBAL_TAINT_CACHE = IdDict{MethodInstance,Tuple{TaintState,IRCode}}()
@@ -370,7 +459,7 @@ function find_taints(ir::IRCode, nargs::Int)
                 #state = TaintState(state_cache[pc], stmt, pc)
                 state = merge_state_stmt!(state_cache[pc], stmt, pc)
             else
-                println("test, cache miss!")
+                #println("test, cache miss!")
                 merge_state_stmt!(state, stmt, pc)
                 state_cache[pc] = state
                 #state = TaintState(state, stmt, pc)
@@ -461,9 +550,11 @@ function find_taints(ir::IRCode, nargs::Int)
 
     #     anyupdate || break
     # end
-    @eval Main (state_cache = $state_cache)
-    clean_cache = cache_cleanup(state_cache, returns) #TODO return a dict of 
-    return (state, clean_cache) 
+    #@eval Main (state_cache = $state_cache; returns = $returns)
+    clean_cache = cache_cleanup(state_cache, returns)
+    println("cache after cleanup: ", state_cache)
+    propagate_cache!(clean_cache)
+    return (state, clean_cache)
 end
 
 # # propagate changes, and check convergence
@@ -600,8 +691,6 @@ end
 #     end
 # end
 
-# # escape every argument `(args[6:length(args[3])])` and the name `args[1]`
-# # TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
 # function escape_foreigncall!(ir::IRCode, pc::Int, args::Vector{Any},
 #                              state::EscapeState, changes::Changes)
 #     foreigncall_nargs = length((args[3])::SimpleVector)
@@ -614,10 +703,6 @@ end
 #         add_change!(args[i], ir, ThrownEscape(pc), changes)
 #     end
 # end
-
-# # NOTE error cases will be handled in `find_escapes` anyway, so we don't need to take care of them below
-# # TODO implement more builtins, make them more accurate
-# # TODO use `T_IFUNC`-like logic and don't not abuse dispatch ?
 
 # escape_builtin!(@nospecialize(f), _...) = return missing
 
@@ -664,7 +749,6 @@ end
 #     end
 # end
 
-# # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
 # function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
 #     # only propagate info when the field itself is non-bitstype
 #     isbitstype(widenconst(ir.stmts.type[pc])) && return true
@@ -693,7 +777,6 @@ function run_passes_with_taint_analysis end
     function $TaintAnalysis.run_passes_with_taint_analysis(interp::$TaintAnalyzer, ci::CodeInfo, sv::OptimizationState)
         @timeit "convert"   ir = convert_to_ircode(ci, sv)
         @timeit "slot2reg"  ir = slot2reg(ir, ci, sv)
-        # TODO: Domsorting can produce an updated domtree - no need to recompute here
         @timeit "compact 1" ir = compact!(ir)
         @timeit "Inlining"  ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
         # @timeit "verify 2" verify_ir(ir)
@@ -725,67 +808,6 @@ function run_passes_with_taint_analysis end
     end
 end
 #end # register_init_hook!() do
-
-# return the ssavalues or arguments that taint pc 
-ssas_tainted_from(state::TaintState, pc) = state.ssavalues[pc]
-args_tainted_from(state::TaintState, pc) = state.arguments[pc]
-
-# TODO: Make these work with (state, arg) argument as well
-function ssas_tainted_by(state::TaintState, pc) # returns the ssavalues that `pc` taints
-    tainted_by_pc = BitSet()
-    for (idx, ele) in enumerate(state.ssavalues)
-        if pc in ele.TaintedPC
-            push!(tainted_by_pc, idx)
-        end
-    end
-    return tainted_by_pc
-end
-
-function args_tainted_by(state::TaintState, pc) # returns the arguments that `pc` taints
-    tainted_by_pc = BitSet()
-    for (idx, ele) in enumerate(state.arguments)
-        if pc in ele.TaintedPC
-            push!(tainted_by_pc, idx)
-        end
-    end
-    return tainted_by_pc
-end
-
-function retrace_taint(res::TaintState, arg)
-    linears = BitSet()
-    nonlinears = Dict{Int, BitSet}()
-    # linearly related
-
-    for (idx, ele) in enumerate(res.ssavalues)
-        if arg in ele.TaintedArg
-            push!(linears, idx)
-        end
-    end
-    # nonlinearly related (1 level)
-    for pc in linears
-        nonlinears[pc] = tainted_by(res, pc)
-    end
-    # nonlinearly related (n levels)
-    #next_nonlinears = copy(nonlinears)
-    for i in keys(nonlinears)
-        for ssaval in nonlinears[i]
-            ssaval_taints = tainted_by(res, ssaval)
-            for tainted in ssaval_taints
-                push!(nonlinears[i], tainted)
-            end
-            #union!(nonlinears[i], tainted_by(res, ssaval))
-        end
-    end
-    #     if nonlinears == next_nonlinears
-    #         fully_traced = true
-    #     else
-    #         println("Loop count: ", loops)
-    #         next_nonlinears = copy(nonlinears)
-    #     end
-    # end
-
-    return (linears, nonlinears)
-end
 
 macro analyze_taints(ex0...)
     return InteractiveUtils.gen_call_with_extracted_types_and_kwargs(__module__, :analyze_taints, ex0)
