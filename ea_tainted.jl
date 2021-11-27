@@ -201,17 +201,6 @@ is_untainted(x::TaintLattice) = x == Clean()
 is_tainted(x::TaintLattice) = x.TaintedPC !== BitSet() || x.TaintedArg !== BitSet()
 # end
 
-function maybeAddTaint!(ele::TaintLattice, val)
-    if isa(val, SSAValue)
-        val = val.id
-        push!(ele.TaintedPC, val)
-    else
-        isa(val, Argument) || return
-        val = val.n
-        push!(ele.TaintedArg, val)
-    end
-end
-
 
 function addTaint!(ele::TaintLattice, pc, arg)
     if pc !== nothing
@@ -289,26 +278,43 @@ function TaintState(nstmts::Int, nargs::Int)
 end
 
 # instead of a single state, create multiple states, each corresponding to a control flow branch
-function TaintState(state::TaintState, stmt, pc::Int)
-    new_state = TaintState(state.ssavalues)
-    lattices = new_state.ssavalues
-    stmt_lattice = lattices[pc]
-    if !stmt_lattice.Analyzed
-        stmt_lattice.Analyzed = true
+# function TaintState(state::TaintState, stmt, pc::Int)
+#     new_state = TaintState(state.ssavalues)
+#     lattices = new_state.ssavalues
+#     stmt_lattice = lattices[pc]
+#     if !stmt_lattice.Analyzed
+#         stmt_lattice.Analyzed = true
+#     end
+#     if isdefined(stmt, :args)
+#         for arg in stmt.args
+#             maybeAddTaint!(new_state, arg)
+#             # if isa(arg, Argument) # if an Argument is in the arguments of this stmt, consider this stmt tainted by that Argument
+#             #     #println("adding ", arg.n, " to TaintedArg of ", stmt_lattice)
+#             #     addTaint!(stmt_lattice, nothing, arg.n)
+#             # elseif isa(arg, SSAValue) # and similarly for SSAValues
+#             #     #println("adding ", arg.id, " to TaintedPC of ", stmt_lattice)
+#             #     addTaint!(stmt_lattice, arg.id, nothing)
+#             # end # if its not an Argument or SSAValue, we don't care
+#         end
+#     end
+#     return new_state
+# end
+
+function maybeAddTaint!(state::TaintState, ele::TaintLattice, val)
+    if isa(val, SSAValue)
+        val = val.id
+        push!(ele.TaintedPC, val)
+        # after adding, union with state.ssavalues[val].TaintedPC, TaintedArg
+        indirects = state.ssavalues[val]
+        indirect_pcs = indirects.TaintedPC
+        indirect_args = indirects.TaintedArg
+        union!(ele.TaintedPC, indirect_pcs)
+        union!(ele.TaintedArg, indirect_args)
+    else
+        isa(val, Argument) || return
+        val = val.n
+        push!(ele.TaintedArg, val)
     end
-    if isdefined(stmt, :args)
-        for arg in stmt.args
-            maybeAddTaint!(stmt_lattice, arg)
-            # if isa(arg, Argument) # if an Argument is in the arguments of this stmt, consider this stmt tainted by that Argument
-            #     #println("adding ", arg.n, " to TaintedArg of ", stmt_lattice)
-            #     addTaint!(stmt_lattice, nothing, arg.n)
-            # elseif isa(arg, SSAValue) # and similarly for SSAValues
-            #     #println("adding ", arg.id, " to TaintedPC of ", stmt_lattice)
-            #     addTaint!(stmt_lattice, arg.id, nothing)
-            # end # if its not an Argument or SSAValue, we don't care
-        end
-    end
-    return new_state
 end
 
 function merge_state_stmt!(state::TaintState, stmt, pc::Int)
@@ -318,7 +324,7 @@ function merge_state_stmt!(state::TaintState, stmt, pc::Int)
     end
     if isdefined(stmt, :args)
         for arg in stmt.args
-            maybeAddTaint!(stmt_lattice, arg)
+            maybeAddTaint!(state, stmt_lattice, arg)
             # if isa(arg, Argument) # if an Argument is in the arguments of this stmt, consider this stmt tainted by that Argument
             #     addTaint!(stmt_lattice, nothing, arg.n)
             # elseif isa(arg, SSAValue) # and similarly for SSAValues
@@ -327,7 +333,7 @@ function merge_state_stmt!(state::TaintState, stmt, pc::Int)
         end
     elseif isdefined(stmt, :val)
         val = stmt.val
-        maybeAddTaint!(stmt_lattice, val)
+        maybeAddTaint!(state, stmt_lattice, val)
     end
     state.ssavalues[pc] = stmt_lattice
     return state
@@ -443,7 +449,8 @@ function find_taints(ir::IRCode, nargs::Int)
     array_elements = Vector{Integer}() # TODO: BitSets?
     returns = Vector{Integer}()
 
-    # TODO: convergence?
+    # TODO: convergence
+    # 
     # while true
     #     local anyupdate = false
 
@@ -479,7 +486,10 @@ function find_taints(ir::IRCode, nargs::Int)
             # collect escape information
             if isa(stmt, Expr)
                 head = stmt.head
-                if head === :call
+                if head === :call 
+                    # TODO: setindex!(a, b, _) should taint a with b
+                    # more granularly? since a is an array
+                    # but also have to consider escapes? --- is_effect_free?
 
                 elseif head === :invoke # TODO: Use taint info from previously processed method IRs in GLOBAL_TAINT_CACHE
 
@@ -545,10 +555,10 @@ function find_taints(ir::IRCode, nargs::Int)
     #     anyupdate || break
     # end
     #@eval Main (state_cache = $state_cache; returns = $returns)
-    clean_cache = cache_cleanup(state_cache, returns)
+    #clean_cache = cache_cleanup(state_cache, returns)
     #println("cache after cleanup: ", state_cache)
     #propagate_cache!(clean_cache)
-    return (state, clean_cache)
+    return (state, state_cache)
 end
 
 # # propagate changes, and check convergence
@@ -782,7 +792,7 @@ function run_passes_with_taint_analysis end
         #println(ir.stmts.inst)
         @timeit "collect escape information" state = $find_taints(ir, nargs)
         # note at this point, cache only has states at return pcs
-        local_state = state |> first # TODO: union together results from all control flows using cache
+        local_state = state |> first # TODO: union together results from all returns using cache
         cacheir = copy(ir)
         # cache this result
         $setindex!($GLOBAL_TAINT_CACHE, (local_state, cacheir), sv.linfo)
