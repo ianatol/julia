@@ -82,6 +82,6 @@ u = [Incidence(Dict(i=>1), BitSet(i), BitSet()) for i = 1:2]
 du = [Incidence(Dict(Diff(i)=>1), BitSet(), BitSet(i)) for i = 1:2]
 
 x = [Dual(u[1], du[1]); Dual(u[2], du[2])]
-TaintAnalysis.@analyze_taints(F((true, false), x))
-# @analyze_call(F((true, false), x))
-# map(ForwardDiff.value, F((true, false), x))
+# res = TaintAnalysis.@analyze_taints(F((true, false), x))
+(res, ir, state) = TaintAnalysis.@analyze_taints(map(ForwardDiff.value, F((true, false), x)))
+println("done!")
