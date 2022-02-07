@@ -499,6 +499,13 @@ Array{T}(A::AbstractArray{S,N}) where {T,N,S} = Array{T,N}(A)
 
 AbstractArray{T}(A::AbstractArray{S,N}) where {T,S,N} = AbstractArray{T,N}(A)
 
+ImmutableArray(a::Array) = arrayfreeze(a)
+ImmutableArray(a::AbstractArray{T,N}) where {T,N} = ImmutableArray{T,N}(a)
+Array(a::ImmutableArray) = arraythaw(a)
+# undef initializers
+ImmutableArray{T,N}(::UndefInitializer, args...) where {T,N} = ImmutableArray(Array{T,N}(undef, args...))
+ImmutableArray{T}(::UndefInitializer, args...) where {T} = ImmutableArray(Array{T}(undef, args...))
+
 # primitive Symbol constructors
 function Symbol(s::String)
     @_foldable_meta

@@ -1849,3 +1849,27 @@ function cfg_simplify!(ir::IRCode)
     compact.active_result_bb = length(bb_starts)
     return finish(compact)
 end
+
+# Inspect calls to arrayfreeze to determine if mutating_arrayfreeze can be safely used instead
+function memory_opt!(ir::IRCode, estate)
+    @show "test"
+    estate = estate::EscapeAnalysis.EscapeState
+    for idx in 1:length(ir.stmts)
+        stmt = ir.stmts[idx][:inst]
+        isexpr(stmt, :call) || continue
+        if is_known_call(stmt, Core.arrayfreeze, ir)
+            # array as SSA value might have been initialized within this frame
+            # (thus potentially doesn't escape to anywhere)
+            length(stmt.args) ≥ 2 || continue
+            ary = stmt.args[2]
+            if isa(ary, SSAValue)
+                # we can change this arrayfreeze call (which incurs allocation) to mutating_arrayfreeze
+                # so that it just changes the type tag of the array and avoids the allocation
+                # as far as the array doesn't escape at this point (meaning we can ignore ThrownEscape here)
+                has_return_escape(estate[ary]) && continue
+                stmt.args[1] = GlobalRef(Core, :mutating_arrayfreeze)
+            end
+        end
+    end
+    return ir
+end

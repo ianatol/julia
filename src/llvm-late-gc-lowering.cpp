@@ -365,6 +365,7 @@ private:
     void RefineLiveSet(BitVector &LS, State &S, const std::vector<int> &CalleeRoots);
     Value *EmitTagPtr(IRBuilder<> &builder, Type *T, Value *V);
     Value *EmitLoadTag(IRBuilder<> &builder, Value *V);
+    Value *EmitStoreTag(IRBuilder<> &builder, Value *V, Value *Typ);
 };
 
 static unsigned getValueAddrSpace(Value *V) {
@@ -2193,6 +2194,16 @@ Value *LateLowerGCFrame::EmitLoadTag(IRBuilder<> &builder, Value *V)
     return load;
 }
 
+Value *LateLowerGCFrame::EmitStoreTag(IRBuilder<> &builder, Value *V, Value *Typ)
+{
+    auto T_size = getSizeTy(builder.getContext());
+    auto addr = EmitTagPtr(builder, T_size, V);
+    StoreInst *store = builder.CreateAlignedStore(Typ, addr, Align(sizeof(size_t)));
+    store->setOrdering(AtomicOrdering::Unordered);
+    store->setMetadata(LLVMContext::MD_tbaa, tbaa_tag);
+    return store;
+}
+
 // Enable this optimization only on LLVM 4.0+ since this cause LLVM to optimize
 // constant store loop to produce a `memset_pattern16` with a global variable
 // that's initialized by `addrspacecast`. Such a global variable is not supported by the backend.
@@ -2380,8 +2391,21 @@ bool LateLowerGCFrame::CleanupIR(Function &F, State *S, bool *CFGModified) {
                 typ->takeName(CI);
                 CI->replaceAllUsesWith(typ);
                 UpdatePtrNumbering(CI, typ, S);
+            } else if (mutating_arrayfreeze_func && callee == mutating_arrayfreeze_func) {
+                assert(CI->getNumArgOperands() == 2);
+                IRBuilder<> builder(CI);
+                builder.SetCurrentDebugLocation(CI->getDebugLoc());
+                auto array = CI->getArgOperand(0);
+                auto tag = EmitLoadTag(builder, array);
+                auto masked = builder.CreateAnd(tag, ConstantInt::get(T_size, ~(uintptr_t)15));
+                auto new_typ = builder.CreateAddrSpaceCast(CI->getArgOperand(1),
+                                                           JuliaType::get_pjlvalue_ty(masked->getContext()));
+                auto new_typ_marked = builder.CreateOr(builder.CreatePtrToInt(new_typ, T_size), masked);
+                EmitStoreTag(builder, array, new_typ_marked);
+                CI->replaceAllUsesWith(array);
+                UpdatePtrNumbering(CI, array, S);
             } else if ((write_barrier_func && callee == write_barrier_func) ||
-                       (write_barrier_binding_func && callee == write_barrier_binding_func)) {
+                      (write_barrier_binding_func && callee == write_barrier_binding_func)) {
                 // The replacement for this requires creating new BasicBlocks
                 // which messes up the loop. Queue all of them to be replaced later.
                 assert(CI->arg_size() >= 1);

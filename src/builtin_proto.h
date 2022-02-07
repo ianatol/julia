@@ -58,6 +58,9 @@ DECLARE_BUILTIN(donotdelete);
 DECLARE_BUILTIN(getglobal);
 DECLARE_BUILTIN(setglobal);
 DECLARE_BUILTIN(finalizer);
+DECLARE_BUILTIN(arrayfreeze);
+DECLARE_BUILTIN(arraythaw);
+DECLARE_BUILTIN(mutating_arrayfreeze);
 
 JL_CALLABLE(jl_f_invoke_kwsorter);
 #ifdef DEFINE_BUILTIN_GLOBALS

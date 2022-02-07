@@ -1358,4 +1358,16 @@ function Base.show(io::IO, op::BroadcastFunction)
 end
 Base.show(io::IO, ::MIME"text/plain", op::BroadcastFunction) = show(io, op)
 
+struct IMArrayStyle <: Broadcast.AbstractArrayStyle{Any} end
+BroadcastStyle(::Type{<:Core.ImmutableArray}) = IMArrayStyle()
+
+function Base.similar(bc::Broadcasted{IMArrayStyle}, ::Type{ElType}) where ElType
+    similar(Array{ElType}, axes(bc))
+end
+
+@inline function copy(bc::Broadcasted{IMArrayStyle})
+    eltype = combine_eltypes(bc.f, bc.args)
+    return Core.ImmutableArray(copyto!(similar(bc, eltype), bc))
+end
+
 end # module

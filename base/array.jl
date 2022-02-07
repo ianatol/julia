@@ -118,6 +118,36 @@ Union type of [`DenseVector{T}`](@ref) and [`DenseMatrix{T}`](@ref).
 """
 const DenseVecOrMat{T} = Union{DenseVector{T}, DenseMatrix{T}}
 
+"""
+    ImmutableArray{T,N} <: AbstractArray{T,N}
+Dynamically allocated, immutable array.
+"""
+const ImmutableArray = Core.ImmutableArray
+
+"""
+    ImmutableVector{T} <: AbstractVector{T}
+Dynamically allocated, immutable vector.
+"""
+const ImmutableVector{T} = ImmutableArray{T,1}
+
+"""
+    IMArray{T,N}
+Union type of [`Array{T,N}`](@ref) and [`ImmutableArray{T,N}`](@ref)
+"""
+const IMArray{T,N} = Union{Array{T, N}, ImmutableArray{T,N}}
+
+"""
+    IMVector{T}
+One-dimensional [`ImmutableArray`](@ref) or [`Array`](@ref) with elements of type `T`. Alias for `IMArray{T, 1}`.
+"""
+const IMVector{T} = IMArray{T, 1}
+
+"""
+    IMMatrix{T}
+Two-dimensional [`ImmutableArray`](@ref) or [`Array`](@ref) with elements of type `T`. Alias for `IMArray{T,2}`.
+"""
+const IMMatrix{T} = IMArray{T, 2}
+
 ## Basic functions ##
 
 using Core: arraysize, arrayset, const_arrayref
@@ -145,12 +175,13 @@ function vect(X...)
     return T[X...]
 end
 
-size(a::Array, d::Integer) = arraysize(a, convert(Int, d))
-size(a::Vector) = (arraysize(a,1),)
-size(a::Matrix) = (arraysize(a,1), arraysize(a,2))
-size(a::Array{<:Any,N}) where {N} = (@inline; ntuple(M -> size(a, M), Val(N))::Dims)
+# Size functions for arrays, both mutable and immutable
+size(a::IMArray, d::Integer) = arraysize(a, convert(Int, d))
+size(a::IMVector) = (arraysize(a,1),)
+size(a::IMMatrix) = (arraysize(a,1), arraysize(a,2))
+size(a::IMArray{<:Any,N}) where {N} = (@inline; ntuple(M -> size(a, M), Val(N))::Dims)
 
-asize_from(a::Array, n) = n > ndims(a) ? () : (arraysize(a,n), asize_from(a, n+1)...)
+asize_from(a::IMArray, n) = n > ndims(a) ? () : (arraysize(a,n), asize_from(a, n+1)...)
 
 allocatedinline(T::Type) = (@_total_meta; ccall(:jl_stored_inline, Cint, (Any,), T) != Cint(0))
 
@@ -210,10 +241,11 @@ function bitsunionsize(u::Union)
     return sz
 end
 
-elsize(@nospecialize _::Type{A}) where {T,A<:Array{T}} = aligned_sizeof(T)
+length(a::Array) = arraylen(a)
+elsize(::Type{<:Array{T}}) where {T} = aligned_sizeof(T)
 sizeof(a::Array) = Core.sizeof(a)
 
-function isassigned(a::Array, i::Int...)
+function isassigned(a::IMArray, i::Int...)
     @inline
     ii = (_sub2ind(size(a), i...) % UInt) - 1
     @boundscheck ii < length(a) % UInt || return false
@@ -611,7 +643,9 @@ oneunit(x::AbstractMatrix{T}) where {T} = _one(oneunit(T), x)
 
 ## Conversions ##
 
-convert(::Type{T}, a::AbstractArray) where {T<:Array} = a isa T ? a : T(a)
+convert(::Type{Union{}}, a::AbstractArray) = throw(MethodError(convert, (Union{}, a)))
+convert(T::Type{<:IMArray}, a::AbstractArray) = a isa T ? a : T(a)
+
 
 promote_rule(a::Type{Array{T,n}}, b::Type{Array{S,n}}) where {T,n,S} = el_same(promote_type(T,S), a, b)
 
@@ -621,6 +655,7 @@ if nameof(@__MODULE__) === :Base  # avoid method overwrite
 # constructors should make copies
 Array{T,N}(x::AbstractArray{S,N})         where {T,N,S} = copyto_axcheck!(Array{T,N}(undef, size(x)), x)
 AbstractArray{T,N}(A::AbstractArray{S,N}) where {T,N,S} = copyto_axcheck!(similar(A,T), A)
+ImmutableArray{T,N}(A::AbstractArray{S,N}) where {T,N,S} = Core.arrayfreeze(copyto_axcheck!(Array{T,N}(undef, size(A)), A))
 end
 
 ## copying iterators to containers
@@ -915,6 +950,13 @@ julia> getindex(A, "a")
 ```
 """
 function getindex end
+
+# This is more complicated than it needs to be in order to get Win64 through bootstrap
+@eval getindex(A::Array, i1::Int) = arrayref($(Expr(:boundscheck)), A, i1)
+@eval getindex(A::Array, i1::Int, i2::Int, I::Int...) = (@inline; arrayref($(Expr(:boundscheck)), A, i1, i2, I...))
+
+@eval getindex(A::ImmutableArray, i1::Int) = arrayref($(Expr(:boundscheck)), A, i1)
+@eval getindex(A::ImmutableArray, i1::Int, i2::Int, I::Int...) = (@inline; arrayref($(Expr(:boundscheck)), A, i1, i2, I...))
 
 # Faster contiguous indexing using copyto! for AbstractUnitRange and Colon
 function getindex(A::Array, I::AbstractUnitRange{<:Integer})

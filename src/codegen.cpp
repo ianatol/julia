@@ -857,6 +857,7 @@ static const auto jl_newbits_func = new JuliaFunction{
 // `julia.typeof` does read memory, but it is effectively readnone before we lower
 // the allocation function. This is OK as long as we lower `julia.typeof` no later than
 // `julia.gc_alloc_obj`.
+// Updated to argmemonly due to C++ deconstructor style usage in jl_f_arrayfreeze / mutating_arrayfreeze
 static const auto jl_typeof_func = new JuliaFunction{
     "julia.typeof",
     [](LLVMContext &C) {
@@ -865,7 +866,7 @@ static const auto jl_typeof_func = new JuliaFunction{
                 {T_prjlvalue}, false);
     },
     [](LLVMContext &C) { return AttributeList::get(C,
-            Attributes(C, {Attribute::ReadNone, Attribute::NoUnwind, Attribute::NoRecurse}),
+            Attributes(C, {Attribute::ArgMemOnly, Attribute::NoUnwind, Attribute::NoRecurse}),
             Attributes(C, {Attribute::NonNull}),
             None); },
 };
@@ -1139,6 +1140,18 @@ static const auto julia_call2 = new JuliaFunction{
     get_attrs_basic,
 };
 
+static const auto mutating_arrayfreeze_func = new JuliaFunction{
+    "julia.mutating_arrayfreeze",
+    [](LLVMContext &C) {
+        auto T_prjlvalue = JuliaType::get_prjlvalue_ty(C);
+        return FunctionType::get(T_prjlvalue,
+                {T_prjlvalue, T_prjlvalue}, false); },
+    [](LLVMContext &C) { return AttributeList::get(C,
+            Attributes(C, {Attribute::NoUnwind, Attribute::NoRecurse}),
+            Attributes(C, {Attribute::NonNull}),
+            None); },
+};
+
 static const auto jltuple_func = new JuliaFunction{XSTR(jl_f_tuple), get_func_sig, get_func_attrs};
 static const auto &builtin_func_map() {
     static std::map<jl_fptr_args_t, JuliaFunction*> builtins = {
@@ -1175,7 +1188,10 @@ static const auto &builtin_func_map() {
           { jl_f_arraysize_addr,          new JuliaFunction{XSTR(jl_f_arraysize), get_func_sig, get_func_attrs} },
           { jl_f_apply_type_addr,         new JuliaFunction{XSTR(jl_f_apply_type), get_func_sig, get_func_attrs} },
           { jl_f_donotdelete_addr,        new JuliaFunction{XSTR(jl_f_donotdelete), get_donotdelete_sig, get_donotdelete_func_attrs} },
-          { jl_f_finalizer_addr,          new JuliaFunction{XSTR(jl_f_finalizer), get_func_sig, get_func_attrs} }
+          { jl_f_finalizer_addr,          new JuliaFunction{XSTR(jl_f_finalizer), get_func_sig, get_func_attrs} },
+          { jl_f_arrayfreeze_addr,          new JuliaFunction{XSTR(jl_f_arrayfreeze), get_func_sig, get_func_attrs} },
+          { jl_f_arraythaw_addr,            new JuliaFunction{XSTR(jl_f_arraythaw), get_func_sig, get_func_attrs} },
+          { jl_f_mutating_arrayfreeze_addr, new JuliaFunction{XSTR(jl_f_mutating_arrayfreeze), get_func_sig, get_func_attrs} }
         };
     return builtins;
 }
@@ -1247,7 +1263,7 @@ static bool deserves_retbox(jl_value_t* t)
 static bool deserves_sret(jl_value_t *dt, Type *T)
 {
     assert(jl_is_datatype(dt));
-    return (size_t)jl_datatype_size(dt) > sizeof(void*) && !T->isFloatingPointTy() && !T->isVectorTy();
+    return (size_t)jl_datatype_size(dt) > sizeof(void*) && !T->isFloatingPointTy() && !T->isVectorTy() && !jl_is_arrayish_type(dt);
 }
 
 
@@ -3229,6 +3245,21 @@ static bool emit_builtin_call(jl_codectx_t &ctx, jl_cgval_t *ret, jl_value_t *f,
                 return true;
             }
         }
+    }
+
+    else if (f == jl_builtin_mutating_arrayfreeze && nargs == 1) {
+        const jl_cgval_t &ary = argv[1];
+        jl_value_t *aty_dt = jl_unwrap_unionall(ary.typ);
+        if (jl_is_array_type(aty_dt)) {
+            jl_datatype_t *it = (jl_datatype_t *)jl_apply_type2((jl_value_t*)jl_immutable_array_type,
+                jl_tparam0(aty_dt), jl_tparam1(aty_dt));
+            *ret = mark_julia_type(ctx,
+                ctx.builder.CreateCall(prepare_call(mutating_arrayfreeze_func),
+                    { boxed(ctx, ary),
+                    track_pjlvalue(ctx, literal_pointer_val(ctx, (jl_value_t*)it)) }), true, it);
+            return true;
+        }
+        return false;
     }
 
     else if (f == jl_builtin_arrayset && nargs >= 4) {
